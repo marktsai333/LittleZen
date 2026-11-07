@@ -23,3 +23,11 @@
 - Whether a supported signed-bundle-preserving route can load the existing browser code. If not, document the effect of fx-autoconfig and present it as an explicit installation choice rather than silently invalidating a signature.
 - Identify and pin an appropriate loader revision with its MPL-2.0 license and source. Determine rights for the Little Zen upstream derivative separately.
 - Determine how to support multiple profiles, running Zen, Hammerspoon accessibility permissions, app updates, partial install and rollback across process interruption.
+
+## 2026-11-08: privilege boundary
+
+Zen installed in `/Applications` may be writable only by an administrator. Running the entire installer as root would also create or replace per-user profile and Hammerspoon files as root, so the prototype rejects that mode. The current CLI intentionally aborts before writes if a selected target directory is not writable; it does not yet solve elevated installation.
+
+A future installer needs two separated operations: the unprivileged user process owns profile changes and its journal, while a narrowly scoped, user-authorized helper changes only explicitly planned application-bundle loader files. Before performing privileged writes, the helper must independently revalidate the selected Zen app identity and executable, exact relative paths, pinned source hashes, expected previous content, filesystem links and the running-process state; it must not trust arbitrary paths or shell text from the user process. It must report partial failures for recovery without exposing or writing browser profile contents as root. Installing into a user-writable app location is another option, but a separate app copy may create identity/update confusion and must not be used as a silent substitute.
+
+Current prototype lifecycle tests use synthetic profile/app directories. The `ps`-based running-process guard cannot be exercised directly in the current sandbox (operation not permitted); tests simulate this OS call and verify its decision logic. Real macOS integration and the user-visible elevation flow remain unverified.

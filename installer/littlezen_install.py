@@ -160,6 +160,11 @@ def plan_update(state_path: Path, payload_root: Path = ROOT):
         if change['mode'] == 'block':
             if current is None: raise Conflict(f'Configuration is missing: {p}')
             remove_block(current, change['begin'], change['end'], installed)
+        elif change['shared'] and current is None:
+            # Zen updates may replace bundle resources. Restore only a missing
+            # pinned loader file; a differing file remains a conflict.
+            actions.append(dict(index=index, path=str(p), root=change['root'], current=None, replacement=encode(installed)))
+            continue
         elif current != installed:
             raise Conflict(f'Installed file was modified or removed: {p}')
         if change['mode'] != 'file' or change['shared'] or p.name not in candidates:

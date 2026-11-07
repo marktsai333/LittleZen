@@ -118,6 +118,18 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(json.loads(self.state().read_text())['phase'],'installed')
         inst.apply_remove(self.state(),inst.plan_remove(self.state()))
         self.assertFalse(self.state().exists())
+    def test_zen_update_missing_loader_is_repairable(self):
+        inst.apply_install(self.plan())
+        loader=self.resources/'config.js'; expected=loader.read_bytes();loader.unlink()
+        actions=inst.plan_update(self.state())
+        self.assertTrue(any(a['path']==str(loader) and a['current'] is None for a in actions))
+        inst.apply_update(self.state(),actions)
+        self.assertEqual(loader.read_bytes(),expected)
+    def test_changed_shared_loader_is_not_replaced(self):
+        inst.apply_install(self.plan())
+        loader=self.resources/'config.js';loader.write_text('different loader')
+        with self.assertRaises(inst.Conflict): inst.plan_update(self.state())
+        self.assertEqual(loader.read_text(),'different loader')
 
 if __name__=='__main__': unittest.main()
 
@@ -127,7 +139,9 @@ class PreviewCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='littlezen-preview-fixture-') as t:
             root=Path(t); profile=root/'profile'; profile.mkdir()
             app=root/'Zen.app'; resources=app/'Contents/Resources'; resources.mkdir(parents=True)
-            (app/'Contents/Info.plist').write_text('fixture')
+            import plistlib
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen'}))
+            (app/'Contents/MacOS').mkdir(); (app/'Contents/MacOS/zen').write_text('fixture')
             (profile/'user.js').write_text('// PRIVATE-MARKER\n')
             cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
             result=subprocess.run([sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app)],capture_output=True,text=True)
@@ -135,3 +149,61 @@ class PreviewCommandTests(unittest.TestCase):
             self.assertNotIn('PRIVATE-MARKER',result.stdout)
             self.assertFalse((profile/'chrome').exists())
             self.assertFalse((resources/'config.js').exists())
+
+class CommandLifecycleTests(unittest.TestCase):
+    def test_fixture_install_update_remove(self):
+        import subprocess, sys, plistlib
+        with tempfile.TemporaryDirectory(prefix='littlezen-cli-fixture-') as t:
+            root=Path(t); profile=root/'profile'; profile.mkdir()
+            app=root/'Zen.app'; (app/'Contents/Resources').mkdir(parents=True)
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'fixture'}))
+            (app/'Contents/MacOS').mkdir(); (app/'Contents/MacOS/zen').write_text('fixture')
+            hs=root/'hammerspoon';hs.mkdir();(hs/'init.lua').write_text('-- keep\n')
+            cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
+            base=[sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app)]
+            # The sandbox blocks process inventory; keep the production guard intact and
+            # mock only that OS check while exercising the actual CLI lifecycle.
+            import contextlib, io
+            from unittest import mock
+            sys.path.insert(0,str(cli.parent))
+            try:
+                import littlezen as command
+            finally:
+                sys.path.pop(0)
+            def run(*args):
+                out,err=io.StringIO(),io.StringIO()
+                with mock.patch.object(command,'ensure_stopped'), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    status=command.main(base[2:]+list(args))
+                return type('Result',(),{'returncode':status,'stdout':out.getvalue(),'stderr':err.getvalue()})()
+            refused=run('--apply','--hammerspoon',str(hs))
+            self.assertEqual(refused.returncode,2); self.assertFalse((profile/'chrome').exists())
+            preview=run('--hammerspoon',str(hs)); self.assertEqual(preview.returncode,0,preview.stderr)
+            self.assertEqual(json.loads(preview.stdout)['mode'],'preview only; no changes made')
+            installed=run('--apply','--ack-bundle-modification','--hammerspoon',str(hs))
+            self.assertEqual(installed.returncode,0,installed.stderr)
+            self.assertEqual(json.loads(installed.stdout)['mode'],'applied')
+            updated=run('--action','update','--apply'); self.assertEqual(updated.returncode,0,updated.stderr)
+            removed=run('--action','remove','--apply'); self.assertEqual(removed.returncode,0,removed.stderr)
+            self.assertIn(str(app/'Contents/Resources/config.js'),json.loads(removed.stdout)['retained_shared_loader'])
+            self.assertFalse((profile/'chrome/JS/littleZen.uc.js').exists())
+            self.assertEqual((hs/'init.lua').read_text(),'-- keep\n')
+            self.assertTrue((app/'Contents/Resources/config.js').exists())
+    def test_reject_unrelated_application(self):
+        import subprocess, sys, plistlib
+        with tempfile.TemporaryDirectory(prefix='littlezen-not-zen-') as t:
+            root=Path(t); profile=root/'profile';profile.mkdir()
+            app=root/'Other.app';(app/'Contents/Resources').mkdir(parents=True)
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'other'}))
+            cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
+            result=subprocess.run([sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app),'--apply'],capture_output=True,text=True)
+            self.assertEqual(result.returncode,2);self.assertFalse((profile/'chrome').exists())
+    def test_process_guard_identifies_selected_zen(self):
+        import sys
+        from unittest import mock
+        cli_dir=Path(__file__).resolve().parents[1]/'installer';sys.path.insert(0,str(cli_dir))
+        try: import littlezen as command
+        finally: sys.path.pop(0)
+        process=type('Process',(),{'stdout':'/Applications/Zen.app/Contents/MacOS/zen -contentproc\n'})()
+        with mock.patch.object(command.subprocess,'run',return_value=process):
+            with self.assertRaises(command.Conflict): command.ensure_stopped(Path('/Applications/Zen.app/Contents/MacOS/zen'))
+            command.ensure_stopped(Path('/tmp/Test.app/Contents/MacOS/zen'))
