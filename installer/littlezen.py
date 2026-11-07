@@ -46,6 +46,9 @@ def main(argv=None):
     parser.add_argument('--apply',action='store_true',help='Apply the proposed action')
     parser.add_argument('--expected-plan',help='Fingerprint obtained from a successful preview')
     parser.add_argument('--ack-bundle-modification',action='store_true',help='Acknowledge that installation can invalidate the Zen bundle signature')
+    parser.add_argument('--remove-owned-app-loader',action='store_true',help='Optionally remove app loader installed by LittleZen after auditing registered profiles')
+    parser.add_argument('--profiles-ini',type=Path,help='Zen profiles.ini used to audit optional loader cleanup')
+    parser.add_argument('--ack-unregistered-profiles',action='store_true',help='Acknowledge unregistered profiles cannot be automatically checked')
     args=parser.parse_args(argv)
     app=args.zen_app.absolute(); profile=args.profile.absolute(); resources=app/'Contents/Resources'
     state_path=profile/'chrome'/STATE_FILE
@@ -58,7 +61,7 @@ def main(argv=None):
             saved=json.loads(state_path.read_text())
             if saved.get('profile') != str(profile) or saved.get('resources') != str(resources):
                 raise Conflict('Selected profile or Zen app does not match the installation record')
-            changes=plan_update(state_path) if args.action=='update' else plan_remove(state_path)
+            changes=plan_update(state_path) if args.action=='update' else plan_remove(state_path,args.remove_owned_app_loader,args.profiles_ini)
         items=[]
         for change in changes:
             old=decode(change.get('before',change.get('current')))
@@ -74,10 +77,15 @@ def main(argv=None):
                  'global_shortcut':args.hammerspoon is not None if args.action=='install' else None,
                  'changes':items,'plan_fingerprint':fingerprint}
         if args.action == 'remove':
-            summary['retained_shared_loader']=[change['path'] for change in saved['changes'] if change.get('shared')]
+            removed_paths={change['path'] for change in changes if change.get('loader_cleanup')}
+            summary['retained_shared_loader']=[change['path'] for change in saved['changes'] if change.get('shared') and change['path'] not in removed_paths]
+            if args.remove_owned_app_loader:
+                summary['loader_cleanup_warning']='Unregistered profiles cannot be detected and may depend on the app loader.'
         if args.apply:
             if args.expected_plan != fingerprint:
                 raise Conflict('Changes differ from the confirmed preview; preview again')
+            if args.remove_owned_app_loader and not args.ack_unregistered_profiles:
+                raise Conflict('App loader cleanup requires acknowledgement of unregistered profiles')
             if os.geteuid()==0: raise Conflict('Do not run the installer as root; it would change profile ownership')
             modifies_bundle=any(Path(item['path']).is_relative_to(resources) and item['action'] != 'already present' for item in items)
             if modifies_bundle and not args.ack_bundle_modification:

@@ -2,6 +2,7 @@
 """Transactional LittleZen installation primitives. Experimental; no system writes on import."""
 from __future__ import annotations
 import base64
+import configparser
 import hashlib
 import json
 import os
@@ -205,7 +206,49 @@ def remove_block(data: bytes, begin: str, end: str, expected: bytes) -> bytes:
     if text.count(block) != 1: raise Conflict('Managed configuration block was edited or removed')
     return text.replace(block, '', 1).encode('utf-8')
 
-def plan_remove(state_path: Path):
+def audit_shared_loader(state, registry_path: Path):
+    """Conservatively audit registered profiles before optional app-loader removal.
+
+    Unregistered profiles cannot be discovered; the caller must explicitly disclose
+    and obtain consent for that limitation before offering cleanup.
+    """
+    registry_path=registry_path.absolute()
+    if registry_path.is_symlink() or not registry_path.is_file():
+        raise Conflict('A readable, non-symlink profiles.ini is required for loader cleanup')
+    registry=configparser.RawConfigParser(interpolation=None, strict=True)
+    try: registry.read_string(registry_path.read_text(encoding='utf-8'))
+    except (UnicodeError,configparser.Error) as exc: raise Conflict('Cannot parse profiles.ini') from exc
+    selected=Path(state['profile']).resolve(strict=True)
+    registered=[]
+    for section in registry.sections():
+        if not re.fullmatch(r'Profile\d+',section): continue
+        value=registry.get(section,'Path',fallback='').strip()
+        relative=registry.get(section,'IsRelative',fallback='1')
+        if not value or relative not in ('0','1'): raise Conflict('Invalid registered profile')
+        if (relative=='1' and Path(value).is_absolute()) or (relative=='0' and not Path(value).is_absolute()):
+            raise Conflict('Registered profile path does not match IsRelative')
+        path=Path(value) if relative=='0' else registry_path.parent/Path(value)
+        try: path=path.resolve(strict=True)
+        except OSError as exc: raise Conflict('A registered profile cannot be inspected') from exc
+        if not path.is_dir(): raise Conflict('A registered profile is not a directory')
+        registered.append(path)
+    if selected not in registered: raise Conflict('Selected profile is not registered in profiles.ini')
+    for profile in registered:
+        chrome=profile/'chrome'; scripts=chrome/'JS'; boot=chrome/'utils/boot.sys.mjs'
+        if chrome.is_symlink() or scripts.is_symlink() or boot.is_symlink():
+            raise Conflict(f'Symlink prevents loader dependency audit: {profile}')
+        if profile != selected and (boot.exists() or (scripts.exists() and any(scripts.iterdir()))):
+            raise Conflict(f'Another registered profile may use the loader: {profile}')
+        if profile == selected and scripts.exists():
+            if not scripts.is_dir(): raise Conflict('Script path is not a directory')
+            if any(p.name != 'littleZen.uc.js' or p.is_symlink() for p in scripts.iterdir()):
+                raise Conflict('Other scripts may use the loader in this profile')
+    app_files=[c for c in state['changes'] if c.get('shared') and Path(c['root']) == Path(state['resources'])]
+    if len(app_files) != 2 or any(not c.get('owned') or decode(c['before']) is not None for c in app_files):
+        raise Conflict('App loader was not wholly installed by LittleZen; keeping it')
+    return app_files
+
+def plan_remove(state_path: Path, remove_app_loader=False, registry_path: Path | None = None):
     state_path=state_path.absolute()
     state=json.loads(state_path.read_text())
     if state.get('version') != 1 or state.get('phase') not in ('installing', 'installed', 'removing'):
@@ -213,6 +256,10 @@ def plan_remove(state_path: Path):
     if state.get('state') != str(state_path): raise Conflict('Installation state path does not match')
     if state['phase'] == 'removing':
         return state['removal_actions']
+    app_loader=[]
+    if remove_app_loader:
+        if registry_path is None: raise Conflict('profiles.ini is required for loader cleanup')
+        app_loader=audit_shared_loader(state,registry_path)
     actions=[]
     for change in reversed(state['changes']):
         p=Path(change['path']); root=Path(change['root']); ensure_safe_parent(p, root)
@@ -232,16 +279,28 @@ def plan_remove(state_path: Path):
         else:
             raise Conflict(f'Installed file was modified; not removing: {p}')
         actions.append(dict(path=str(p), root=str(root), current=encode(current), replacement=encode(replacement)))
+    for change in app_loader:
+        p=Path(change['path']); ensure_safe_parent(p,Path(change['root']))
+        current=read(p)
+        if current is None: continue
+        if current != decode(change['after']): raise Conflict(f'App loader changed; keeping it: {p}')
+        actions.append(dict(path=str(p), root=change['root'], current=encode(current), replacement=None, loader_cleanup=True, registry=str(registry_path.absolute())))
     return actions
 
 def apply_remove(state_path: Path, actions):
     state_path=state_path.absolute()
+    state=json.loads(state_path.read_text())
+    cleanup=[action for action in actions if action.get('loader_cleanup')]
+    if cleanup:
+        registries={action.get('registry') for action in cleanup}
+        if len(registries) != 1 or None in registries: raise Conflict('Invalid loader cleanup audit')
+        permitted={change['path'] for change in audit_shared_loader(state,Path(next(iter(registries))))}
+        if any(action['path'] not in permitted for action in cleanup): raise Conflict('Invalid loader cleanup target')
     for action in actions:
         p=Path(action['path']); ensure_safe_parent(p, Path(action['root']))
         current=read(p)
         if current != decode(action['current']) and current != decode(action['replacement']):
             raise Conflict(f'File changed after planning: {p}')
-    state=json.loads(state_path.read_text())
     if state.get('phase') != 'removing':
         state['phase']='removing'; state['removal_actions']=actions
         atomic_write(state_path, json.dumps(state, indent=2).encode())

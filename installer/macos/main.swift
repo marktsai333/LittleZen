@@ -7,6 +7,8 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
     let profile = NSTextField(string: "")
     let zen = NSTextField(string: "/Applications/Zen.app")
     let hs = NSButton(checkboxWithTitle: "Configure Hammerspoon global shortcut", target: nil, action: nil)
+    let cleanup = NSButton(checkboxWithTitle: "Remove LittleZen-owned app loader when possible", target: nil, action: nil)
+    let registry = NSTextField(string: NSHomeDirectory() + "/Library/Application Support/zen/profiles.ini")
     let status = NSTextField(wrappingLabelWithString: "Select a Zen profile, then preview the changes.")
     let action = NSPopUpButton()
     var lastPlan: String?
@@ -15,7 +17,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
     var applyButton: NSButton!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 340), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 420), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "LittleZen Installer — Preview"
         window.center()
         let stack = NSStackView()
@@ -26,16 +28,19 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         let explanation = NSTextField(wrappingLabelWithString: "Preview changes before installing, updating, or removing LittleZen. The loader can affect Zen’s code signature.")
         let profileRow = row("Zen profile", profile, #selector(selectProfile))
         let appRow = row("Zen app", zen, #selector(selectApp))
+        let registryRow = row("Profiles", registry, #selector(selectRegistry))
         action.addItems(withTitles: ["Install", "Update", "Remove"])
         action.target = self; action.action = #selector(clearPreview)
         hs.state = .off; hs.target = self; hs.action = #selector(clearPreview)
+        cleanup.state = .off; cleanup.target = self; cleanup.action = #selector(clearPreview)
+        registry.target = self; registry.action = #selector(clearPreview)
         profile.target = self; profile.action = #selector(clearPreview)
         zen.target = self; zen.action = #selector(clearPreview)
         previewButton = NSButton(title: "Preview", target: self, action: #selector(preview))
         applyButton = NSButton(title: "Apply", target: self, action: #selector(apply))
         applyButton.isEnabled = false
         let buttons = NSStackView(views: [action, previewButton, applyButton]); buttons.orientation = .horizontal; buttons.spacing = 12
-        for view in [title, explanation, profileRow, appRow, hs, buttons, status] { stack.addArrangedSubview(view) }
+        for view in [title, explanation, profileRow, appRow, hs, cleanup, registryRow, buttons, status] { stack.addArrangedSubview(view) }
         window.contentView!.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24), stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24), stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 22)])
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -49,6 +54,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func selectProfile() { choose(profile, canChooseFiles: false, title: "Choose the Zen profile folder") }
     @objc func selectApp() { choose(zen, canChooseFiles: true, title: "Choose Zen.app") }
+    @objc func selectRegistry() { choose(registry, canChooseFiles: true, title: "Choose profiles.ini") }
     func choose(_ field: NSTextField, canChooseFiles: Bool, title: String) {
         let panel = NSOpenPanel(); panel.title = title; panel.canChooseFiles = canChooseFiles; panel.canChooseDirectories = !canChooseFiles
         panel.treatsFilePackagesAsDirectories = false; panel.allowsMultipleSelection = false
@@ -60,6 +66,10 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         let cli = bundleRoot.appendingPathComponent("installer/littlezen.py").path
         var a = ["python3", cli, "--profile", profile.stringValue, "--zen-app", zen.stringValue, "--action", action.titleOfSelectedItem!.lowercased()]
         if hs.state == .on && action.indexOfSelectedItem == 0 { a += ["--hammerspoon", NSHomeDirectory() + "/.hammerspoon"] }
+        if cleanup.state == .on && action.indexOfSelectedItem == 2 {
+            a += ["--remove-owned-app-loader", "--profiles-ini", registry.stringValue]
+            if apply { a += ["--ack-unregistered-profiles"] }
+        }
         if apply { a += ["--apply", "--ack-bundle-modification", "--expected-plan", planFingerprint ?? ""] }
         return a
     }
@@ -82,7 +92,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         guard !profile.stringValue.isEmpty else { status.stringValue = "Choose a Zen profile first."; return }
         run(false) { code, output in
             self.status.stringValue = code == 0 ? "Preview ready. Review the proposed changes below." : "Unable to prepare changes."
-            let alert = NSAlert(); alert.messageText = code == 0 ? "Proposed changes" : "Cannot prepare changes"; alert.informativeText = output
+            let alert = NSAlert(); alert.messageText = code == 0 ? "Proposed changes" : "Cannot prepare changes"; alert.informativeText = code == 0 ? self.describe(output) : output
             alert.addButton(withTitle: "OK"); alert.runModal()
             if code == 0, let data = output.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let fingerprint = json["plan_fingerprint"] as? String {
                 self.lastPlan = self.args(false).joined(separator: "\u{1f}"); self.planFingerprint = fingerprint; self.applyButton.isEnabled = true
@@ -92,14 +102,25 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
     @objc func apply() {
         guard lastPlan == args(false).joined(separator: "\u{1f}") else { clearPreview(); status.stringValue = "Settings changed. Preview again."; return }
         let alert = NSAlert(); alert.messageText = "Apply these changes?"
-        alert.informativeText = "The selected Zen app must be closed. Installation may modify its bundle and invalidate its signature. Shared loader files are retained when removing LittleZen."
+        alert.informativeText = cleanup.state == .on && action.indexOfSelectedItem == 2 ? "The selected Zen app must be closed. The installer checks registered profiles, but cannot detect unregistered profiles that may rely on the loader. Continue only if you have checked them." : "The selected Zen app must be closed. Installation may modify its bundle and invalidate its signature. Shared loader files are retained when removing LittleZen."
         alert.addButton(withTitle: "Apply"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         run(true) { code, output in
             self.clearPreview(); self.status.stringValue = code == 0 ? "Finished. Restart Zen to load changes." : "No completion was confirmed. Review details."
-            let result = NSAlert(); result.messageText = code == 0 ? "Finished" : "Could not complete"; result.informativeText = output
+            let result = NSAlert(); result.messageText = code == 0 ? "Finished" : "Could not complete"; result.informativeText = code == 0 ? self.describe(output) : output
             result.addButton(withTitle: "OK"); result.runModal()
         }
+    }
+    func describe(_ output: String) -> String {
+        guard let data = output.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let changes = json["changes"] as? [[String: Any]] else { return output }
+        let lines = changes.compactMap { change -> String? in
+            guard let action = change["action"] as? String, let path = change["path"] as? String else { return nil }
+            return "\(action): \(path)"
+        }
+        var description = lines.isEmpty ? "No file changes." : lines.joined(separator: "\n")
+        if let warning = json["loader_cleanup_warning"] as? String { description += "\n\n" + warning }
+        if let retained = json["retained_shared_loader"] as? [String], !retained.isEmpty { description += "\n\nShared loader files retained: \(retained.count)." }
+        return description
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

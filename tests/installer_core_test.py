@@ -130,6 +130,45 @@ class InstallerTests(unittest.TestCase):
         loader=self.resources/'config.js';loader.write_text('different loader')
         with self.assertRaises(inst.Conflict): inst.plan_update(self.state())
         self.assertEqual(loader.read_text(),'different loader')
+    def registry(self, extra=''):
+        registry=Path(self.tmp.name)/'profiles.ini'
+        registry.write_text('[Profile0]\nIsRelative=1\nPath=profile\n'+extra)
+        return registry
+    def test_optional_owned_app_loader_cleanup(self):
+        inst.apply_install(self.plan()); registry=self.registry()
+        actions=inst.plan_remove(self.state(),True,registry)
+        self.assertEqual(sum(bool(a.get('loader_cleanup')) for a in actions),2)
+        inst.apply_remove(self.state(),actions)
+        self.assertFalse((self.resources/'config.js').exists())
+        self.assertFalse((self.resources/'defaults/pref/config-prefs.js').exists())
+    def test_cleanup_rejects_other_registered_profile_using_loader(self):
+        inst.apply_install(self.plan()); other=Path(self.tmp.name)/'other'; (other/'chrome/utils').mkdir(parents=True)
+        (other/'chrome/utils/boot.sys.mjs').write_text('other customization')
+        registry=self.registry('\n[Profile1]\nIsRelative=1\nPath=other\n')
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,registry)
+        self.assertTrue((self.resources/'config.js').exists())
+    def test_cleanup_rejects_other_scripts_and_modified_loader(self):
+        inst.apply_install(self.plan()); registry=self.registry()
+        other=self.profile/'chrome/JS/other.uc.js';other.write_text('other')
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,registry)
+        other.unlink();(self.resources/'config.js').write_text('changed')
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,registry)
+    def test_cleanup_rejects_preexisting_shared_loader(self):
+        (self.resources/'config.js').write_bytes((inst.VENDOR/'program/config.js').read_bytes())
+        inst.apply_install(self.plan())
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,self.registry())
+    def test_cleanup_rejects_unknown_or_missing_profile_registry(self):
+        inst.apply_install(self.plan())
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,None)
+        self.registry().write_text('[Profile0]\nIsRelative=1\nPath=missing\n')
+        with self.assertRaises(inst.Conflict): inst.plan_remove(self.state(),True,Path(self.tmp.name)/'profiles.ini')
+    def test_cleanup_rechecks_dependencies_before_applying(self):
+        inst.apply_install(self.plan()); registry=self.registry()
+        actions=inst.plan_remove(self.state(),True,registry)
+        (self.profile/'chrome/JS/another.uc.js').write_text('later customization')
+        with self.assertRaises(inst.Conflict): inst.apply_remove(self.state(),actions)
+        self.assertTrue(self.state().exists())
+        self.assertTrue((self.resources/'config.js').exists())
 
 if __name__=='__main__': unittest.main()
 
@@ -151,6 +190,24 @@ class PreviewCommandTests(unittest.TestCase):
             self.assertFalse((resources/'config.js').exists())
 
 class CommandLifecycleTests(unittest.TestCase):
+    def test_loader_cleanup_requires_unregistered_profile_acknowledgement(self):
+        import subprocess, sys, plistlib
+        with tempfile.TemporaryDirectory(prefix='littlezen-cleanup-cli-') as t:
+            root=Path(t);profile=root/'profile';profile.mkdir()
+            app=root/'Zen.app';resources=app/'Contents/Resources';resources.mkdir(parents=True)
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen'}))
+            (app/'Contents/MacOS').mkdir();(app/'Contents/MacOS/zen').write_text('fixture')
+            inst.apply_install(inst.plan_install(profile,resources))
+            registry=root/'profiles.ini';registry.write_text('[Profile0]\nIsRelative=1\nPath=profile\n')
+            cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
+            base=[sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app),'--action','remove','--remove-owned-app-loader','--profiles-ini',str(registry)]
+            preview=subprocess.run(base,capture_output=True,text=True)
+            self.assertEqual(preview.returncode,0,preview.stderr)
+            fingerprint=json.loads(preview.stdout)['plan_fingerprint']
+            self.assertIn('Unregistered profiles',json.loads(preview.stdout)['loader_cleanup_warning'])
+            denied=subprocess.run(base+['--apply','--expected-plan',fingerprint,'--ack-bundle-modification'],capture_output=True,text=True)
+            self.assertEqual(denied.returncode,2);self.assertIn('unregistered',denied.stderr)
+            self.assertTrue((resources/'config.js').exists())
     def test_fixture_install_update_remove(self):
         import subprocess, sys, plistlib
         with tempfile.TemporaryDirectory(prefix='littlezen-cli-fixture-') as t:
