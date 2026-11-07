@@ -1,0 +1,9 @@
+.DS_Store
+backups/
+*.log
+*.request
+*.claimed
+*.closed
+README-preview.html
+REVIEW.md
+assets/workflow.svg

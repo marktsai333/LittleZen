@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('candidate/littleZen.uc.js', 'utf8');
+const start = source.indexOf('  function log(...args) {');
+const end = source.indexOf('\n  // A short-lived token', start);
+assert.ok(start >= 0 && end > start);
+let enabled = false;
+let writes = 0;
+const ctx = { Services: { prefs: {getBoolPref: () => enabled}, console: {logStringMessage: () => writes++}, dirsvc: {get: () => { writes++; throw Error('mock'); }} }, console: {log: () => writes++}, formatLogArg: String, Ci: {} };
+vm.runInNewContext(source.slice(start, end) + '\nthis.log = log;', ctx);
+ctx.log('https://private.example/');
+assert.equal(writes, 0, 'default must not write diagnostics');
+enabled = true;
+ctx.log('test');
+assert.ok(writes > 0, 'explicit opt-in enables diagnostics');

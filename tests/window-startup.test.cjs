@@ -1,0 +1,28 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const s = fs.readFileSync(path.join(__dirname, '../candidate/littleZen.uc.js'), 'utf8');
+const begin = s.indexOf('  function patchOpenBrowserWindow(win) {');
+const end = s.indexOf('  function patchCompactModeManager(', begin);
+assert(begin >= 0 && end > begin);
+const attrs = {};
+const little = {document:{documentElement:{setAttribute:(k,v)=>attrs[k]=v}}};
+let called;
+const parent = {OpenBrowserWindow: opts => {called=opts; return little;}};
+const context = {PATCH_FLAGS:{openBrowserWindow:'patched'},OPEN_FEATURES:'test', searchWindowFeatures: () => 'test', hideSearchWindowUntilReady: () => false,
+ LITTLE_WINDOW_ATTR:'zen-little-window',log() {}};
+vm.runInNewContext(s.slice(begin,end)+'\nthis.patch = patchOpenBrowserWindow;',context);
+context.patch(parent);
+const result = parent.OpenBrowserWindow({zenLittleWindow:true, littleZenOriginContainerId:4});
+assert.equal(result,little);
+assert.equal(little._zenStartupSyncFlag,'unsynced');
+assert.equal(little._zenStartupUnsyncedUserContextId,4);
+assert.equal(called.zenSyncedWindow,false);
+assert.equal(attrs['zen-little-window'],'true');
+parent.OpenBrowserWindow({zenLittleWindow:true, url:'https://example.invalid/', expanded:true, littleZenFreshExternalStart:true});
+assert.equal(little.__littleZenStartExpanded, true);
+assert.equal(little.__littleZenStartLoadingVeil, true);
+assert.equal(little.__littleZenFreshExternalStart, true);
+assert.equal(attrs['zen-little-window-loading'], 'true');
+console.log('Initial window startup receives the originating container before first tab setup.');
