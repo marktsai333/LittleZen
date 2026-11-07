@@ -4,6 +4,8 @@ backups/
 *.request
 *.claimed
 *.closed
+__pycache__/
+*.pyc
 README-preview.html
 REVIEW.md
 assets/workflow.svg
