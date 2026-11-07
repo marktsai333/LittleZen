@@ -141,6 +141,56 @@ def apply_install(plan):
         # A durable journal remains for explicit recovery after process failure.
         raise
 
+def plan_update(state_path: Path, payload_root: Path = ROOT):
+    state_path=state_path.absolute()
+    state=json.loads(state_path.read_text())
+    if state.get('version') != 1 or state.get('state') != str(state_path):
+        raise Conflict('Unrecognized installation state')
+    if state.get('phase') == 'updating':
+        return state['update_actions']
+    if state.get('phase') != 'installed':
+        raise Conflict('Complete recovery before updating')
+    candidates={'littleZen.uc.js': payload_root/'candidate/littleZen.uc.js',
+                'little-zen.css': payload_root/'candidate/little-zen.css',
+                'little-zen-bridge.lua': payload_root/'candidate/little-zen-bridge.lua'}
+    actions=[]
+    for index, change in enumerate(state['changes']):
+        p=Path(change['path']); ensure_safe_parent(p, Path(change['root']))
+        current=read(p); installed=decode(change['after'])
+        if change['mode'] == 'block':
+            if current is None: raise Conflict(f'Configuration is missing: {p}')
+            remove_block(current, change['begin'], change['end'], installed)
+        elif current != installed:
+            raise Conflict(f'Installed file was modified or removed: {p}')
+        if change['mode'] != 'file' or change['shared'] or p.name not in candidates:
+            continue
+        new=candidates[p.name].read_bytes()
+        if new == installed: continue
+        if not change['owned']:
+            raise Conflict(f'Cannot update a pre-existing file: {p}')
+        actions.append(dict(index=index, path=str(p), root=change['root'], current=encode(current), replacement=encode(new)))
+    return actions
+
+def apply_update(state_path: Path, actions):
+    state_path=state_path.absolute(); state=json.loads(state_path.read_text())
+    if state.get('phase') not in ('installed','updating'):
+        raise Conflict('Complete recovery before updating')
+    if state.get('phase') == 'updating' and state.get('update_actions') != actions:
+        raise Conflict('Update plan differs from recovery journal')
+    for action in actions:
+        p=Path(action['path']); ensure_safe_parent(p, Path(action['root']))
+        if read(p) not in (decode(action['current']),decode(action['replacement'])):
+            raise Conflict(f'File changed after planning: {p}')
+    if state['phase'] == 'installed':
+        state['phase']='updating'; state['update_actions']=actions
+        atomic_write(state_path,json.dumps(state,indent=2).encode())
+    for action in actions:
+        p=Path(action['path']); replacement=decode(action['replacement'])
+        if read(p) != replacement: atomic_write(p,replacement)
+        state['changes'][action['index']]['after']=action['replacement']
+    state['phase']='installed'; state.pop('update_actions',None)
+    atomic_write(state_path,json.dumps(state,indent=2).encode())
+
 def remove_block(data: bytes, begin: str, end: str, expected: bytes) -> bytes:
     text=data.decode('utf-8')
     before=expected.decode('utf-8')

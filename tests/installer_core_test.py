@@ -93,5 +93,45 @@ class InstallerTests(unittest.TestCase):
         inst.apply_remove(self.state(),inst.plan_remove(self.state()))
         self.assertFalse(self.state().exists())
         self.assertEqual((self.hs/'init.lua').read_text(),'-- existing settings\n')
+    def test_update_then_remove_preserves_original(self):
+        inst.apply_install(self.plan())
+        package=Path(self.tmp.name)/'release'; (package/'candidate').mkdir(parents=True)
+        for name in ('littleZen.uc.js','little-zen.css','little-zen-bridge.lua'):
+            (package/'candidate'/name).write_text('new '+name)
+        actions=inst.plan_update(self.state(),package)
+        self.assertEqual(len(actions),3)
+        inst.apply_update(self.state(),actions)
+        self.assertEqual((self.hs/'little-zen-bridge.lua').read_text(),'new little-zen-bridge.lua')
+        inst.apply_remove(self.state(),inst.plan_remove(self.state()))
+        self.assertFalse((self.hs/'little-zen-bridge.lua').exists())
+        self.assertEqual((self.hs/'init.lua').read_text(),'-- existing settings\n')
+    def test_interrupted_update_can_resume(self):
+        inst.apply_install(self.plan())
+        package=Path(self.tmp.name)/'release'; (package/'candidate').mkdir(parents=True)
+        for name in ('littleZen.uc.js','little-zen.css','little-zen-bridge.lua'):
+            (package/'candidate'/name).write_text('new '+name)
+        actions=inst.plan_update(self.state(),package)
+        state=json.loads(self.state().read_text());state['phase']='updating';state['update_actions']=actions
+        inst.atomic_write(self.state(),json.dumps(state).encode())
+        inst.atomic_write(Path(actions[0]['path']),inst.decode(actions[0]['replacement']))
+        inst.apply_update(self.state(),inst.plan_update(self.state(),package))
+        self.assertEqual(json.loads(self.state().read_text())['phase'],'installed')
+        inst.apply_remove(self.state(),inst.plan_remove(self.state()))
+        self.assertFalse(self.state().exists())
 
 if __name__=='__main__': unittest.main()
+
+class PreviewCommandTests(unittest.TestCase):
+    def test_preview_only_discloses_paths_not_file_contents(self):
+        import subprocess, sys
+        with tempfile.TemporaryDirectory(prefix='littlezen-preview-fixture-') as t:
+            root=Path(t); profile=root/'profile'; profile.mkdir()
+            app=root/'Zen.app'; resources=app/'Contents/Resources'; resources.mkdir(parents=True)
+            (app/'Contents/Info.plist').write_text('fixture')
+            (profile/'user.js').write_text('// PRIVATE-MARKER\n')
+            cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
+            result=subprocess.run([sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertNotIn('PRIVATE-MARKER',result.stdout)
+            self.assertFalse((profile/'chrome').exists())
+            self.assertFalse((resources/'config.js').exists())
