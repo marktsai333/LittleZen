@@ -9,3 +9,5 @@ __pycache__/
 README-preview.html
 REVIEW.md
 assets/workflow.svg
+
+build/

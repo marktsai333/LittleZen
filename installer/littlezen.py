@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Experimental CLI: preview by default; use only after reviewing the installation plan."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,7 @@ def main(argv=None):
     parser.add_argument('--hammerspoon',type=Path,help='Existing Hammerspoon config directory (optional)')
     parser.add_argument('--action',choices=('install','update','remove'),default='install')
     parser.add_argument('--apply',action='store_true',help='Apply the proposed action')
+    parser.add_argument('--expected-plan',help='Fingerprint obtained from a successful preview')
     parser.add_argument('--ack-bundle-modification',action='store_true',help='Acknowledge that installation can invalidate the Zen bundle signature')
     args=parser.parse_args(argv)
     app=args.zen_app.absolute(); profile=args.profile.absolute(); resources=app/'Contents/Resources'
@@ -63,15 +65,19 @@ def main(argv=None):
             new=decode(change.get('after',change.get('replacement')))
             action='already present' if old==new else 'create' if old is None else 'remove' if new is None else 'modify'
             items.append({'path':change['path'],'action':action,'shared':change.get('shared',False)})
+        payload={'action':args.action,'profile':str(profile),'zen_app':str(app),'changes':changes}
+        fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         summary={'mode':'preview only; no changes made' if not args.apply else 'apply',
                  'action':args.action,'profile':str(profile),'zen_app':str(app),
                  'zen_version':info.get('CFBundleShortVersionString','unknown'),
                  'bundle_signature_warning':'Changing the app bundle can invalidate its code signature.',
                  'global_shortcut':args.hammerspoon is not None if args.action=='install' else None,
-                 'changes':items}
+                 'changes':items,'plan_fingerprint':fingerprint}
         if args.action == 'remove':
             summary['retained_shared_loader']=[change['path'] for change in saved['changes'] if change.get('shared')]
         if args.apply:
+            if args.expected_plan != fingerprint:
+                raise Conflict('Changes differ from the confirmed preview; preview again')
             if os.geteuid()==0: raise Conflict('Do not run the installer as root; it would change profile ownership')
             modifies_bundle=any(Path(item['path']).is_relative_to(resources) and item['action'] != 'already present' for item in items)
             if modifies_bundle and not args.ack_bundle_modification:
