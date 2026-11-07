@@ -7,7 +7,12 @@ case "$OUTPUT" in /*) ;; *) printf '%s\n' 'Use an absolute output path.' >&2; ex
 CACHE=${TMPDIR:-/tmp}/littlezen-swift-module-cache
 mkdir -p "$OUTPUT/Contents/MacOS" "$OUTPUT/Contents/Resources/installer" "$OUTPUT/Contents/Resources/candidate" "$OUTPUT/Contents/Resources/vendor"
 mkdir -p "$CACHE"
-CLANG_MODULE_CACHE_PATH="$CACHE" swiftc -module-cache-path "$CACHE" "$ROOT/installer/macos/main.swift" -framework AppKit -o "$OUTPUT/Contents/MacOS/LittleZenInstaller"
+BUILD_TMP=$(mktemp -d "${TMPDIR:-/tmp}/littlezen-build.XXXXXXXX")
+trap 'rm -rf "$BUILD_TMP"' EXIT HUP INT TERM
+for ARCH in arm64 x86_64; do
+  CLANG_MODULE_CACHE_PATH="$CACHE" swiftc -module-cache-path "$CACHE" -target "$ARCH-apple-macos12.0" "$ROOT/installer/macos/main.swift" -framework AppKit -o "$BUILD_TMP/LittleZenInstaller-$ARCH"
+done
+lipo -create "$BUILD_TMP/LittleZenInstaller-arm64" "$BUILD_TMP/LittleZenInstaller-x86_64" -output "$OUTPUT/Contents/MacOS/LittleZenInstaller"
 cp "$ROOT/installer/littlezen.py" "$ROOT/installer/littlezen_install.py" "$OUTPUT/Contents/Resources/installer/"
 cp "$ROOT/candidate/littleZen.uc.js" "$ROOT/candidate/little-zen.css" "$ROOT/candidate/little-zen-bridge.lua" "$OUTPUT/Contents/Resources/candidate/"
 cp -R "$ROOT/vendor/fx-autoconfig" "$OUTPUT/Contents/Resources/vendor/"
