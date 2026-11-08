@@ -19,7 +19,7 @@ Open Little Zen with a shortcut, search or enter a URL, and browse in a compact 
 > [!IMPORTANT]
 > A first-time installer is not available yet. The current files support updates to an existing setup only. See [setup and maintenance](docs/SETUP.md).
 
-Little Zen currently requires macOS, Zen Browser, a compatible userChromeJS loader, and Hammerspoon for the global shortcut. The current setup was tested with Zen 1.24b.
+Little Zen currently targets Apple Silicon Macs and requires macOS, Zen Browser, a compatible userChromeJS loader, and Hammerspoon for the global shortcut. The current setup was tested with Zen 1.24b.
 
 ## Usage
 

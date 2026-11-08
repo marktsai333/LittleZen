@@ -13,6 +13,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
     let action = NSPopUpButton()
     var lastPlan: String?
     var planFingerprint: String?
+    var versionWarning: String?
     var previewButton: NSButton!
     var applyButton: NSButton!
 
@@ -60,17 +61,18 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         panel.treatsFilePackagesAsDirectories = false; panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { field.stringValue = url.path; clearPreview() }
     }
-    @objc func clearPreview() { lastPlan = nil; planFingerprint = nil; applyButton.isEnabled = false }
+    @objc func clearPreview() { lastPlan = nil; planFingerprint = nil; versionWarning = nil; applyButton.isEnabled = false }
     func args(_ apply: Bool) -> [String] {
-        let bundleRoot = Bundle.main.resourceURL!
-        let cli = bundleRoot.appendingPathComponent("installer/littlezen.py").path
-        var a = ["python3", cli, "--profile", profile.stringValue, "--zen-app", zen.stringValue, "--action", action.titleOfSelectedItem!.lowercased()]
+        var a = ["--profile", profile.stringValue, "--zen-app", zen.stringValue, "--action", action.titleOfSelectedItem!.lowercased()]
         if hs.state == .on && action.indexOfSelectedItem == 0 { a += ["--hammerspoon", NSHomeDirectory() + "/.hammerspoon"] }
         if cleanup.state == .on && action.indexOfSelectedItem == 2 {
             a += ["--remove-owned-app-loader", "--profiles-ini", registry.stringValue]
             if apply { a += ["--ack-unregistered-profiles"] }
         }
-        if apply { a += ["--apply", "--ack-bundle-modification", "--expected-plan", planFingerprint ?? ""] }
+        if apply {
+            a += ["--apply", "--ack-bundle-modification", "--expected-plan", planFingerprint ?? ""]
+            if versionWarning != nil { a += ["--ack-untested-zen"] }
+        }
         return a
     }
     func run(_ apply: Bool, _ done: @escaping (Int32, String) -> Void) {
@@ -79,7 +81,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         status.stringValue = "Checking…"
         DispatchQueue.global(qos: .userInitiated).async {
             let process = Process(); let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env"); process.arguments = arguments
+            process.executableURL = Bundle.main.resourceURL!.appendingPathComponent("installer/littlezen-core"); process.arguments = arguments
             process.standardOutput = pipe; process.standardError = pipe
             var code: Int32 = -1; var output = ""
             do { try process.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit(); code = process.terminationStatus; output = String(decoding: data, as: UTF8.self) }
@@ -95,7 +97,9 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
             let alert = NSAlert(); alert.messageText = code == 0 ? "Proposed changes" : "Cannot prepare changes"; alert.informativeText = code == 0 ? self.describe(output) : output
             alert.addButton(withTitle: "OK"); alert.runModal()
             if code == 0, let data = output.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let fingerprint = json["plan_fingerprint"] as? String {
-                self.lastPlan = self.args(false).joined(separator: "\u{1f}"); self.planFingerprint = fingerprint; self.applyButton.isEnabled = true
+                self.lastPlan = self.args(false).joined(separator: "\u{1f}"); self.planFingerprint = fingerprint
+                self.versionWarning = json["zen_compatibility_warning"] as? String
+                self.applyButton.isEnabled = true
             }
         }
     }
@@ -103,6 +107,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         guard lastPlan == args(false).joined(separator: "\u{1f}") else { clearPreview(); status.stringValue = "Settings changed. Preview again."; return }
         let alert = NSAlert(); alert.messageText = "Apply these changes?"
         alert.informativeText = cleanup.state == .on && action.indexOfSelectedItem == 2 ? "The selected Zen app must be closed. The installer checks registered profiles, but cannot detect unregistered profiles that may rely on the loader. Continue only if you have checked them." : "The selected Zen app must be closed. Installation may modify its bundle and invalidate its signature. Shared loader files are retained when removing LittleZen."
+        if let warning = versionWarning { alert.informativeText += "\n\n" + warning }
         alert.addButton(withTitle: "Apply"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         run(true) { code, output in
@@ -119,6 +124,7 @@ final class InstallerDelegate: NSObject, NSApplicationDelegate {
         }
         var description = lines.isEmpty ? "No file changes." : lines.joined(separator: "\n")
         if let warning = json["loader_cleanup_warning"] as? String { description += "\n\n" + warning }
+        if let warning = json["zen_compatibility_warning"] as? String { description += "\n\n" + warning }
         if let retained = json["retained_shared_loader"] as? [String], !retained.isEmpty { description += "\n\nShared loader files retained: \(retained.count)." }
         return description
     }

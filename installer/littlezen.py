@@ -49,6 +49,7 @@ def main(argv=None):
     parser.add_argument('--remove-owned-app-loader',action='store_true',help='Optionally remove app loader installed by LittleZen after auditing registered profiles')
     parser.add_argument('--profiles-ini',type=Path,help='Zen profiles.ini used to audit optional loader cleanup')
     parser.add_argument('--ack-unregistered-profiles',action='store_true',help='Acknowledge unregistered profiles cannot be automatically checked')
+    parser.add_argument('--ack-untested-zen',action='store_true',help='Acknowledge the selected Zen version has not been tested')
     args=parser.parse_args(argv)
     app=args.zen_app.absolute(); profile=args.profile.absolute(); resources=app/'Contents/Resources'
     state_path=profile/'chrome'/STATE_FILE
@@ -68,7 +69,9 @@ def main(argv=None):
             new=decode(change.get('after',change.get('replacement')))
             action='already present' if old==new else 'create' if old is None else 'remove' if new is None else 'modify'
             items.append({'path':change['path'],'action':action,'shared':change.get('shared',False)})
-        payload={'action':args.action,'profile':str(profile),'zen_app':str(app),'changes':changes}
+        payload={'action':args.action,'profile':str(profile),'zen_app':str(app),
+                 'zen_info_sha256':hashlib.sha256((app/'Contents/Info.plist').read_bytes()).hexdigest(),
+                 'changes':changes}
         fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         summary={'mode':'preview only; no changes made' if not args.apply else 'apply',
                  'action':args.action,'profile':str(profile),'zen_app':str(app),
@@ -76,6 +79,9 @@ def main(argv=None):
                  'bundle_signature_warning':'Changing the app bundle can invalidate its code signature.',
                  'global_shortcut':args.hammerspoon is not None if args.action=='install' else None,
                  'changes':items,'plan_fingerprint':fingerprint}
+        zen_version=info.get('CFBundleShortVersionString','unknown')
+        if zen_version != '1.24b':
+            summary['zen_compatibility_warning']=f'Zen {zen_version} has not been verified; compatibility is unknown.'
         if args.action == 'remove':
             removed_paths={change['path'] for change in changes if change.get('loader_cleanup')}
             summary['retained_shared_loader']=[change['path'] for change in saved['changes'] if change.get('shared') and change['path'] not in removed_paths]
@@ -84,6 +90,8 @@ def main(argv=None):
         if args.apply:
             if args.expected_plan != fingerprint:
                 raise Conflict('Changes differ from the confirmed preview; preview again')
+            if zen_version != '1.24b' and not args.ack_untested_zen:
+                raise Conflict(f'Zen {zen_version} has not been tested; explicit acknowledgement is required')
             if args.remove_owned_app_loader and not args.ack_unregistered_profiles:
                 raise Conflict('App loader cleanup requires acknowledgement of unregistered profiles')
             if os.geteuid()==0: raise Conflict('Do not run the installer as root; it would change profile ownership')

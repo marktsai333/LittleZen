@@ -179,7 +179,7 @@ class PreviewCommandTests(unittest.TestCase):
             root=Path(t); profile=root/'profile'; profile.mkdir()
             app=root/'Zen.app'; resources=app/'Contents/Resources'; resources.mkdir(parents=True)
             import plistlib
-            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen'}))
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'1.24b'}))
             (app/'Contents/MacOS').mkdir(); (app/'Contents/MacOS/zen').write_text('fixture')
             (profile/'user.js').write_text('// PRIVATE-MARKER\n')
             cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
@@ -190,12 +190,27 @@ class PreviewCommandTests(unittest.TestCase):
             self.assertFalse((resources/'config.js').exists())
 
 class CommandLifecycleTests(unittest.TestCase):
+    def test_untested_zen_version_requires_acknowledgement(self):
+        import subprocess, sys, plistlib
+        with tempfile.TemporaryDirectory(prefix='littlezen-version-cli-') as t:
+            root=Path(t);profile=root/'profile';profile.mkdir();app=root/'Zen.app'
+            (app/'Contents/Resources').mkdir(parents=True);(app/'Contents/MacOS').mkdir()
+            (app/'Contents/MacOS/zen').write_text('fixture')
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'99.0'}))
+            cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
+            base=[sys.executable,str(cli),'--profile',str(profile),'--zen-app',str(app)]
+            preview=subprocess.run(base,capture_output=True,text=True)
+            self.assertEqual(preview.returncode,0,preview.stderr)
+            info=json.loads(preview.stdout);self.assertIn('not been verified',info['zen_compatibility_warning'])
+            denied=subprocess.run(base+['--apply','--expected-plan',info['plan_fingerprint'],'--ack-bundle-modification'],capture_output=True,text=True)
+            self.assertEqual(denied.returncode,2);self.assertIn('not been tested',denied.stderr)
+            self.assertFalse((profile/'chrome').exists())
     def test_loader_cleanup_requires_unregistered_profile_acknowledgement(self):
         import subprocess, sys, plistlib
         with tempfile.TemporaryDirectory(prefix='littlezen-cleanup-cli-') as t:
             root=Path(t);profile=root/'profile';profile.mkdir()
             app=root/'Zen.app';resources=app/'Contents/Resources';resources.mkdir(parents=True)
-            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen'}))
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'1.24b'}))
             (app/'Contents/MacOS').mkdir();(app/'Contents/MacOS/zen').write_text('fixture')
             inst.apply_install(inst.plan_install(profile,resources))
             registry=root/'profiles.ini';registry.write_text('[Profile0]\nIsRelative=1\nPath=profile\n')
@@ -213,7 +228,7 @@ class CommandLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='littlezen-cli-fixture-') as t:
             root=Path(t); profile=root/'profile'; profile.mkdir()
             app=root/'Zen.app'; (app/'Contents/Resources').mkdir(parents=True)
-            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'fixture'}))
+            (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'app.zen-browser.zen','CFBundleExecutable':'zen','CFBundleShortVersionString':'1.24b'}))
             (app/'Contents/MacOS').mkdir(); (app/'Contents/MacOS/zen').write_text('fixture')
             hs=root/'hammerspoon';hs.mkdir();(hs/'init.lua').write_text('-- keep\n')
             cli=Path(__file__).resolve().parents[1]/'installer/littlezen.py'
@@ -237,6 +252,12 @@ class CommandLifecycleTests(unittest.TestCase):
             preview=run('--hammerspoon',str(hs)); self.assertEqual(preview.returncode,0,preview.stderr)
             self.assertEqual(json.loads(preview.stdout)['mode'],'preview only; no changes made')
             fingerprint=json.loads(preview.stdout)['plan_fingerprint']
+            info_path=app/'Contents/Info.plist';original_info=info_path.read_bytes()
+            changed_info=plistlib.loads(original_info);changed_info['CFBundleVersion']='changed'
+            info_path.write_bytes(plistlib.dumps(changed_info))
+            stale_app=run('--apply','--expected-plan',fingerprint,'--ack-bundle-modification','--hammerspoon',str(hs))
+            self.assertEqual(stale_app.returncode,2);self.assertFalse((profile/'chrome').exists())
+            info_path.write_bytes(original_info)
             (hs/'init.lua').write_text('-- changed after preview\n')
             stale=run('--apply','--expected-plan',fingerprint,'--ack-bundle-modification','--hammerspoon',str(hs))
             self.assertEqual(stale.returncode,2);self.assertFalse((profile/'chrome').exists())

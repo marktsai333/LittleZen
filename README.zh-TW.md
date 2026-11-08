@@ -19,7 +19,7 @@
 > [!IMPORTANT]
 > 首次安裝程式尚未提供。目前的檔案僅支援更新已完成設定的環境，請參考[設定與維護](docs/SETUP.md)。
 
-Little Zen 目前需要 macOS、Zen Browser、相容的 userChromeJS 載入器，以及用來提供全域快捷鍵的 Hammerspoon。目前的設定已在 Zen 1.24b 測試。
+Little Zen 目前以 Apple Silicon Mac 為目標，需要 macOS、Zen Browser、相容的 userChromeJS 載入器，以及用來提供全域快捷鍵的 Hammerspoon。目前的設定已在 Zen 1.24b 測試。
 
 ## 使用方式
 

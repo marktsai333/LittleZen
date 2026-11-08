@@ -51,3 +51,17 @@ This proves the specific clean 1.24b copy can recover its signature if those exa
 `plan_remove(..., remove_app_loader=True, registry_path=...)` can include the two app-bundle loader files only when their installation record says they were created by LittleZen, the current bytes match, the selected profile is registered, and the audit finds no other scripts in it or obvious loader usage in other registered profiles. The CLI also requires explicit acknowledgement that unregistered profiles cannot be detected. The default retains all shared loader files. The audit is repeated when applying the plan, and conflicts abort cleanup. This is conservative but cannot prove the absence of unregistered profiles or every possible external dependency; the option is available in the experimental GUI with an explicit warning and is not enabled by default. The GUI has not yet been visually tested.
 
 In a disposable official Zen 1.24b copy with a synthetic single-profile registry, the actual installer and optional cleanup were run end to end. Unsandboxed `codesign --verify --deep --strict` returned 0 on the original copy, nonzero with the installed loader, and 0 after the owned app-loader cleanup. The test did not launch Zen or validate its runtime behavior.
+
+## 2026-11-08: Apple Silicon standalone experiment
+
+The requested target is now Apple Silicon only. A core executable was packaged using the python.org 3.13.17 macOS universal installer (SHA-256 recorded in `third_party/README.md`) and PyInstaller 6.16.0. The package was extracted to the ignored build directory rather than installed. Its local Python launcher was relocated and ad-hoc signed for the build experiment; this is not Developer ID signing or notarization.
+
+The arm64 core was bundled into the prototype AppKit app. A process-level test executed the bundled core with PATH restricted to system utilities and Python environment variables removed; install, update and optional owned-loader removal succeeded against a newly-created synthetic app and profile. The test driver itself used local Python; the core under test was the bundled executable. The app GUI was compiled but not launched or visually verified. The prototype still lacks a safe privilege-elevation implementation for root-owned application bundles and remains unsuitable for public release.
+
+The build scripts compute and verify source and binary fingerprints before assembling the preview app. The intended scope does not include Intel support.
+
+## 2026-11-08: packaged Apple Silicon core and version gate
+
+The prototype now launches a bundled arm64 PyInstaller core instead of requiring `python3` from the user's PATH. The build appends source-input and binary fingerprints and refuses to assemble a stale or altered core. Two opt-in standalone process tests succeeded against temporary synthetic apps and profiles: install/update/remove, and refusal to apply against an unverified Zen version without acknowledgement. The test driver used Python; the tested core executable carried its own runtime. GUI interaction, actual permissions and a fresh real Zen session remain unverified.
+
+The initial packaging experiment used Python.org 3.13.17 because an official macOS binary was available. Python.org subsequently lists security fixes in 3.13.18 without a binary installer. Do not treat 3.13.17 as a final release-runtime choice: evaluate a current supported patched runtime, affected modules, reproducibility, and complete notices before distribution. The bundled application is neither Developer ID signed nor notarized.

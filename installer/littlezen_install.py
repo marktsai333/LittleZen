@@ -10,8 +10,9 @@ import re
 from pathlib import Path
 import tempfile
 import stat
+import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
 VENDOR = ROOT / 'vendor/fx-autoconfig'
 BEGIN = '# >>> LittleZen managed block >>>'
 END = '# <<< LittleZen managed block <<<'
