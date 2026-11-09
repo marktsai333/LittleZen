@@ -7,6 +7,10 @@ local hotkey, launchTimer
 local launching = false
 local debugEnabled = false
 local focusSession, focusPoll, focusWatcher
+local shortcutWatcher, shortcutReloadTimer
+local shortcutConfigPath, shortcutConfigDirectory
+local started = false
+local currentGlobalModifiers, currentGlobalKey = {}, nil
 
 local function clearFocusSession()
   if focusPoll then focusPoll:stop(); focusPoll = nil end
@@ -147,8 +151,8 @@ local function pickZen()
 end
 
 local function sendInternalShortcut(zen)
-  trace('sending Zen-local ⌘⌥N to pid ' .. tostring(zen:pid()))
-  hs.eventtap.keyStroke({'cmd', 'alt'}, 'n', 0, zen)
+  trace('sending private F18 signal to pid ' .. tostring(zen:pid()))
+  hs.eventtap.keyStroke({}, 'f18', 0, zen)
 end
 
 local function safelyPrepareFocusReturn(zen, previous)
@@ -228,15 +232,7 @@ local function startZenAndOpen(previous, runningWithoutWindow)
   launchTimer = hs.timer.doAfter(0.5, waitForWindow)
 end
 
-function M.start(options)
-  if hotkey then return true end
-  options = options or {}
-  zenBundle = options.bundleID or 'app.zen-browser.zen'
-  fixedTargetPID = options.targetPID
-  debugEnabled = options.debug == true
-  -- Finder owns ⌘⌥N for New Smart Folder. Keep that native shortcut intact;
-  -- use ⌘⌥⇧N for the system-wide Little Zen action.
-  hotkey = hs.hotkey.bind(options.modifiers or {'cmd', 'alt', 'shift'}, options.key or 'n', function()
+local function openFromGlobalShortcut()
     trace('global shortcut received')
     local previous = hs.application.frontmostApplication()
     local zen, err = pickZen()
@@ -251,12 +247,133 @@ function M.start(options)
     else
       hs.alert.show(err)
     end
-  end)
+end
+
+local function keyNameFromCode(keycode)
+  local names = {
+    VK_RETURN='return', VK_ENTER='return', VK_ESCAPE='escape', VK_BACK='delete',
+    VK_DELETE='forwarddelete', VK_TAB='tab', VK_SPACE='space',
+    VK_UP='up', VK_DOWN='down', VK_LEFT='left', VK_RIGHT='right',
+    VK_HOME='home', VK_END='end', VK_PAGE_UP='pageup', VK_PAGE_DOWN='pagedown',
+    VK_SEMICOLON=';', VK_EQUALS='=', VK_COMMA=',', VK_PERIOD='.', VK_SLASH='/',
+    VK_BACK_QUOTE='`', VK_OPEN_BRACKET='[', VK_BACK_SLASH='\\',
+    VK_CLOSE_BRACKET=']', VK_QUOTE="'", VK_SUBTRACT='-', VK_ADD='+',
+  }
+  local upper = tostring(keycode or ''):upper()
+  if names[upper] then return names[upper] end
+  local fn = upper:match('^VK_F(%d+)$')
+  if fn and tonumber(fn) <= 24 then return 'f' .. fn end
+  local simple = upper:match('^VK_([A-Z0-9])$')
+  if simple then return simple:lower() end
+  return nil
+end
+
+local function readShortcutConfig()
+  if not shortcutConfigPath then return nil end
+  local file = io.open(shortcutConfigPath, 'r')
+  if not file then return nil end
+  local content = file:read('*a')
+  file:close()
+  local ok, config = pcall(function() return hs.json.decode(content) end)
+  if not ok or type(config) ~= 'table' or config.version ~= 1 then return nil end
+  if config.enabled == false then return {disabled=true} end
+  if type(config.modifiers) ~= 'table' then return nil end
+  local modifiers, seen = {}, {}
+  local allowed = {cmd=true, alt=true, ctrl=true, shift=true}
+  for _, modifier in ipairs(config.modifiers or {}) do
+    if not allowed[modifier] or seen[modifier] then return nil end
+    seen[modifier] = true
+    modifiers[#modifiers + 1] = modifier
+  end
+  if #modifiers == 0 then return nil end
+  local key = config.key and tostring(config.key):lower() or keyNameFromCode(config.keycode)
+  if not key or key == '' then return nil end
+  return {modifiers=modifiers, key=key}
+end
+
+local function sameHotkey(modifiers, key)
+  if currentGlobalKey ~= key then return false end
+  if #currentGlobalModifiers ~= #modifiers then return false end
+  local left, right = {}, {}
+  for _, value in ipairs(currentGlobalModifiers) do left[value] = true end
+  for _, value in ipairs(modifiers) do right[value] = true end
+  for value in pairs(left) do if not right[value] then return false end end
+  return true
+end
+
+local function bindGlobalHotkey(modifiers, key)
+  if sameHotkey(modifiers or {}, key) then return true end
+  if hotkey then hotkey:delete(); hotkey = nil end
+  currentGlobalModifiers, currentGlobalKey = modifiers or {}, key
+  if not key then
+    trace('global shortcut disabled in Zen Keyboard Shortcuts')
+    return true
+  end
+  hotkey = hs.hotkey.bind(modifiers, key, openFromGlobalShortcut)
   if not hotkey then
-    hs.alert.show('Little Zen：⌘⌥N 已被其他程式使用')
+    hs.alert.show('Little Zen：全域快捷鍵無法使用，請檢查是否與其他 App 衝突')
+    trace('could not bind configured global shortcut')
+    currentGlobalKey = nil
     return false
   end
+  trace('global shortcut bound to ' .. table.concat(modifiers, '+') .. '+' .. key)
   return true
+end
+
+local function reloadGlobalHotkey()
+  shortcutReloadTimer = nil
+  local config = readShortcutConfig()
+  if not config then return end
+  if config.disabled then
+    bindGlobalHotkey({}, nil)
+  else
+    bindGlobalHotkey(config.modifiers, config.key)
+  end
+end
+
+local function watchGlobalShortcutConfig()
+  if not hs.pathwatcher or not shortcutConfigDirectory then return end
+  -- Watch the already-existing Application Support directory. The Little Zen
+  -- subdirectory is created only when the user edits the global shortcut.
+  local watchRoot = shortcutConfigDirectory:match('^(.*)/[^/]+$') or shortcutConfigDirectory
+  shortcutWatcher = hs.pathwatcher.new(watchRoot, function(paths)
+    for _, changed in ipairs(paths or {}) do
+      if type(changed) == 'string' and
+        (changed == shortcutConfigPath or changed == shortcutConfigDirectory or
+          changed:find(shortcutConfigDirectory .. '/', 1, true) == 1) then
+        if shortcutReloadTimer then shortcutReloadTimer:stop() end
+        shortcutReloadTimer = hs.timer.doAfter(0.25, reloadGlobalHotkey)
+        break
+      end
+    end
+  end):start()
+end
+
+function M.start(options)
+  if started then return true end
+  options = options or {}
+  zenBundle = options.bundleID or 'app.zen-browser.zen'
+  fixedTargetPID = options.targetPID
+  debugEnabled = options.debug == true
+  shortcutConfigPath = options.shortcutConfigPath or ((os.getenv('HOME') or '') .. '/Library/Application Support/Little Zen/global-shortcut.json')
+  shortcutConfigDirectory = shortcutConfigPath:match('^(.*)/[^/]+$')
+
+  local configured = readShortcutConfig()
+  local modifiers = options.modifiers or {'cmd', 'alt', 'shift'}
+  local key = options.key or 'n'
+  if configured then
+    if configured.disabled then
+      modifiers, key = {}, nil
+    else
+      modifiers, key = configured.modifiers, configured.key
+    end
+  end
+  -- Finder reserves ⌘⌥N. The default global shortcut is ⌘⌥⇧N, and Zen's
+  -- local shortcut is configured independently in Zen Keyboard Shortcuts.
+  local bound = bindGlobalHotkey(modifiers, key)
+  started = true
+  watchGlobalShortcutConfig()
+  return bound
 end
 
 function M.stop()
@@ -264,7 +381,12 @@ function M.stop()
   launching = false
   if launchTimer then launchTimer:stop(); launchTimer = nil end
   if hotkey then hotkey:delete(); hotkey = nil end
+  if shortcutWatcher then shortcutWatcher:stop(); shortcutWatcher = nil end
+  if shortcutReloadTimer then shortcutReloadTimer:stop(); shortcutReloadTimer = nil end
   fixedTargetPID = nil
+  currentGlobalModifiers, currentGlobalKey = {}, nil
+  shortcutConfigPath, shortcutConfigDirectory = nil, nil
+  started = false
 end
 
 return M

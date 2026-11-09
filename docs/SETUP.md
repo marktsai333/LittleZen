@@ -28,13 +28,8 @@ The selected directory must contain `littleZen.uc.js` and `little-zen.css`. The 
 
 A tested, selective uninstall procedure is not yet available. Do not remove shared loader files or replace `user.js`, `userChrome.css`, or `init.lua` wholesale. Track which entries and files belong exclusively to Little Zen before attempting removal.
 
-## Customize the global shortcut
+## Customize Little Zen shortcuts
 
-In the existing Hammerspoon `init.lua` that loads the bridge, configure the `start` call. For example, this retains the default shortcut:
+In Zen, open **Settings → Keyboard Shortcuts** and search for **Little Zen**. The **In Zen** action defaults to `⌘⌥N`; the **Global** action defaults to `⌘⌥⇧N` to avoid Finder's `⌘⌥N` shortcut. Record a new combination or clear either action in that page.
 
-```lua
-_G.littleZenBridge = dofile(hs.configdir .. "/little-zen-bridge.lua")
-_G.littleZenBridge.start({ modifiers = {"cmd", "alt", "shift"}, key = "n" })
-```
-
-Change the modifier list or key, save, then reload Hammerspoon. Check for conflicts with other apps. This changes the system-wide shortcut; the Zen-local shortcut is separate and is not yet user-configurable through settings.
+When the Global action changes, Zen saves the binding under `~/Library/Application Support/Little Zen/global-shortcut.json`; the Hammerspoon bridge watches that file and updates its system-wide hotkey without requiring an `init.lua` edit. The binding itself is one macOS-wide shortcut, while Zen's shortcut page stores its displayed choice per profile. Set Global from the profile you normally use. Hammerspoon must be running for it to work outside Zen. If the new combination is already registered by macOS or another app, choose a different one.

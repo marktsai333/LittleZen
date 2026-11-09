@@ -31,7 +31,13 @@ Little Zen 目前以 Apple Silicon Mac 為目標，需要 macOS、Zen Browser、
 
 <img src="assets/window-preview.png" width="720" alt="桌面上的 Little Zen 瀏覽視窗" />
 
-全域快捷鍵可以在 Hammerspoon 修改，請參考[快捷鍵設定](docs/SETUP.md#customize-the-global-shortcut)。Zen 內的快捷鍵目前寫在瀏覽器程式中。
+### 自訂快捷鍵
+
+在 Zen 的「設定 → 鍵盤快捷鍵」搜尋「Little Zen」，即可修改「Zen 內」和「全域」兩個項目。「全域」會透過 Hammerspoon 更新 macOS 的系統快捷鍵；要在 Zen 以外使用時，Hammerspoon 必須保持執行。Zen 的快捷鍵頁會依設定檔保存顯示值，請從平常使用的設定檔修改「全域」項目。
+
+<img src="assets/keyboard-shortcuts.png" width="900" alt="Zen 鍵盤快捷鍵頁中的 Little Zen 內部與全域快捷鍵" />
+
+<sub>Zen 原生設定頁中的兩個 Little Zen 快捷鍵項目。</sub>
 
 ## 功能
 

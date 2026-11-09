@@ -31,7 +31,13 @@ Little Zen currently targets Apple Silicon Macs and requires macOS, Zen Browser,
 
 <img src="assets/window-preview.png" width="720" alt="A Little Zen browsing window on the desktop" />
 
-The global shortcut can be changed in Hammerspoon; see [shortcut configuration](docs/SETUP.md#customize-the-global-shortcut). The Zen-local shortcut is currently fixed in the browser script.
+### Customize shortcuts
+
+Find **Little Zen** in Zen's **Settings → Keyboard Shortcuts** to edit the **In Zen** and **Global** actions. The Global action updates one system-wide shortcut through Hammerspoon, which must be running for it to work outside Zen. Zen stores shortcut-page choices per profile, so set the Global action from the profile you normally use.
+
+<img src="assets/keyboard-shortcuts.png" width="900" alt="Little Zen's editable in-Zen and global shortcuts in Zen Keyboard Shortcuts" />
+
+<sub>The two Little Zen shortcut actions in Zen's native settings.</sub>
 
 ## Features
 

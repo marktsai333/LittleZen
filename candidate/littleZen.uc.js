@@ -9,6 +9,10 @@
 
   const LITTLE_WINDOW_ATTR = "zen-little-window";
   const COMMAND_ID = "cmd_zenNewLittleWindow";
+  const LOCAL_SHORTCUT_KEY_ID = "little-zen-shortcut-key";
+  const GLOBAL_SHORTCUT_KEY_ID = "little-zen-global-shortcut-key";
+  const BRIDGE_SHORTCUT_KEY_ID = "little-zen-bridge-key";
+  const SHORTCUT_CONFIG_FILE = "global-shortcut.json";
   const URLBAR_HEIGHT = 340;
   const URLBAR_WIDTH = 520;
   const SEARCH_HEIGHT_PREF = "extensions.littleZen.search.lastHeight";
@@ -3938,64 +3942,134 @@
     log("Injected cmd_zenNewLittleWindow command");
   }
 
+  function globalShortcutConfigPath() {
+    const home = Services.dirsvc.get("Home", Ci.nsIFile).path;
+    return PathUtils.join(home, "Library", "Application Support", "Little Zen", SHORTCUT_CONFIG_FILE);
+  }
+
+  function writeGlobalShortcutConfig(win, key) {
+    const modifiers = (key.getAttribute("modifiers") || "")
+      .split(",")
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean)
+      .map(value => {
+        if (value === "accel" || value === "meta") return "cmd";
+        if (value === "control" || value === "ctrl") return "ctrl";
+        if (value === "alt") return "alt";
+        if (value === "shift") return "shift";
+        return null;
+      })
+      .filter((value, index, all) => value && all.indexOf(value) === index);
+    const keyValue = key.getAttribute("key") || null;
+    const keycode = key.getAttribute("keycode") || null;
+    const config = {
+      version: 1,
+      enabled: !!(modifiers.length && (keyValue || keycode)),
+      modifiers,
+      key: keyValue,
+      keycode,
+    };
+    const path = globalShortcutConfigPath();
+    const directory = path.slice(0, path.lastIndexOf("/"));
+    const previousWrite = win.__littleZenGlobalShortcutWriteQueue || Promise.resolve();
+    win.__littleZenGlobalShortcutWriteQueue = previousWrite.catch(() => {})
+      .then(() => IOUtils.makeDirectory(directory, { createAncestors: true }))
+      .then(() => IOUtils.writeJSON(path, config, { tmpPath: `${path}.tmp` }))
+      .then(() => log("Saved the global shortcut from Zen Keyboard Shortcuts"))
+      .catch(error => log("Could not save the global shortcut setting", error));
+  }
+
+  function watchGlobalShortcutConfig(win, key) {
+    if (key.__littleZenGlobalShortcutObserver) return;
+    const observer = new win.MutationObserver(() => {
+      if (win.__littleZenGlobalShortcutSaveTimer) {
+        win.clearTimeout(win.__littleZenGlobalShortcutSaveTimer);
+      }
+      win.__littleZenGlobalShortcutSaveTimer = win.setTimeout(() => {
+        win.__littleZenGlobalShortcutSaveTimer = null;
+        writeGlobalShortcutConfig(win, key);
+      }, 100);
+    });
+    observer.observe(key, {
+      attributes: true,
+      attributeFilter: ["key", "keycode", "modifiers", "data-l10n-id"],
+    });
+    key.__littleZenGlobalShortcutObserver = observer;
+    win.addEventListener("unload", () => observer.disconnect(), { once: true });
+  }
+
+  function ensureSettingsShortcutRegistration() {
+    try {
+      const { ZenKeyboardShortcuts } = ChromeUtils.importESModule(
+        "resource:///modules/zen/kbs/ZenKeyboardShortcuts.sys.mjs"
+      );
+      if (ZenKeyboardShortcuts.__littleZenSettingsRegistration) return;
+      const originalAddKeys = ZenKeyboardShortcuts.addKeys;
+      ZenKeyboardShortcuts.addKeys = async function (actor, keys) {
+        const registered = await originalAddKeys.call(this, actor, keys);
+        const topWindow = actor.browsingContext.topChromeWindow;
+        const chinese = topWindow.document.documentElement.lang?.toLowerCase().startsWith("zh");
+        const category = (registered["Little Zen"] ??= {});
+        const customEntries = [
+          [LOCAL_SHORTCUT_KEY_ID, chinese ? "Little Zen — Zen 內" : "Little Zen — In Zen"],
+          [GLOBAL_SHORTCUT_KEY_ID, chinese ? "Little Zen — 全域" : "Little Zen — Global"],
+        ];
+        for (const [id, title] of customEntries) {
+          const data = actor.getKeyData(id);
+          if (data) {
+            data.title = title;
+            category[id] = data;
+          }
+        }
+        return registered;
+      };
+      ZenKeyboardShortcuts.__littleZenSettingsRegistration = true;
+      log("Registered Little Zen shortcuts in Zen Keyboard Shortcuts");
+    } catch (error) {
+      log("Could not connect Little Zen shortcuts to Zen Keyboard Shortcuts", error);
+    }
+  }
+
   function ensureFallbackShortcut(win) {
     if (win[PATCH_FLAGS.keyListener]) {
       return;
     }
 
-    // F18 is reserved for the local macOS bridge and is distinct from its global shortcut.
+    // Hammerspoon uses F18 as a private signal so its global key can be changed
+    // independently from the Zen-local shortcut.
     const bridgeSet = win.document.getElementById("mainKeyset");
-    if (bridgeSet && !win.document.getElementById("little-zen-bridge-key")) {
+    if (bridgeSet && !win.document.getElementById(BRIDGE_SHORTCUT_KEY_ID)) {
       const bridgeKey = win.document.createXULElement("key");
-      bridgeKey.id = "little-zen-bridge-key";
+      bridgeKey.id = BRIDGE_SHORTCUT_KEY_ID;
       bridgeKey.setAttribute("keycode", "VK_F18");
       bridgeKey.setAttribute("command", COMMAND_ID);
       bridgeSet.appendChild(bridgeKey);
     }
 
-    const isAccelPressed = event =>
-      AppConstants.platform === "macosx"
-        ? event.metaKey || event.ctrlKey
-        : event.ctrlKey;
-
-    // Register the shortcut through Gecko's native keyset so it is handled
-    // consistently by the browser chrome even when the focused content owns keys.
     const keyset = win.document.getElementById("mainKeyset");
-    if (keyset && !win.document.getElementById("little-zen-shortcut-key")) {
-      const key = win.document.createXULElement("key");
-      key.id = "little-zen-shortcut-key";
-      key.setAttribute("key", "n");
-      key.setAttribute("modifiers", "accel,alt");
-      key.setAttribute("command", COMMAND_ID);
-      keyset.appendChild(key);
-      log("Registered native Little Zen accel+alt+n key binding", {
+    if (keyset) {
+      const ensureKey = (id, modifiers) => {
+        let key = win.document.getElementById(id);
+        if (key) return key;
+        key = win.document.createXULElement("key");
+        key.id = id;
+        key.setAttribute("key", "n");
+        key.setAttribute("modifiers", modifiers);
+        key.setAttribute("command", COMMAND_ID);
+        keyset.appendChild(key);
+        return key;
+      };
+      ensureKey(LOCAL_SHORTCUT_KEY_ID, "accel,alt");
+      const globalKey = ensureKey(GLOBAL_SHORTCUT_KEY_ID, "accel,alt,shift");
+      watchGlobalShortcutConfig(win, globalKey);
+      ensureSettingsShortcutRegistration();
+      log("Registered editable Little Zen local and global shortcuts", {
         keyset: keyset.id,
       });
     } else if (!keyset) {
       log("Could not find mainKeyset for Little Zen shortcut");
     }
-
-    const onKeyDown = event => {
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        event.shiftKey ||
-        event.getModifierState("AltGraph") ||
-        !event.altKey ||
-        !isAccelPressed(event) ||
-        event.code !== "KeyN" && event.key?.toLowerCase() !== "n"
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      LittleZen.openLittleWindow(win, { source: "shortcut" });
-    };
-
-    win.addEventListener("keydown", onKeyDown, true);
     win[PATCH_FLAGS.keyListener] = true;
-    log("Attached fallback Little Zen shortcut listener");
   }
 
   function patchContentLinkShortcut() {
